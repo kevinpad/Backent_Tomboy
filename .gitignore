@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Entorno
+.venv/
+env/
+venv/
+.venv*/
+
+# Dependencias
+pip-wheel-metadata/
+*.egg-info/
+dist/
+build/
+
+# Configs de editor
+.vscode/
+.idea/
+
+# Variables secretas
+.env
+*.env
+
+# SO
+.DS_Store
+Thumbs.db
