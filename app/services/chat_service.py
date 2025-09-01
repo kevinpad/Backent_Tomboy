@@ -1,30 +1,25 @@
-from app.clients.gemini_client import (
-    get_gemini_client, Content, Part, GenerateContentConfig, ThinkingConfig
-)
+# app/services/chat_service.py
+from app.clients.gemini_client import get_gemini_client
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.core.roles import get_role
 
 
-def _build_config(temperature: float, thinking_budget: int | None, system_prompt: str | None):
-    cfg = GenerateContentConfig(
-        temperature=temperature,
-        thinking_config=ThinkingConfig(thinking_budget=thinking_budget)
-        if thinking_budget is not None else None
-    )
-    # Algunas versiones soportan system_instruction; si falla, haremos prepend.
+def _build_config(temperature: float, thinking_budget: int | None, system_prompt: str | None) -> dict:
+    cfg: dict = {"temperature": temperature}
+    if thinking_budget is not None:
+        cfg["thinking_config"] = {"thinking_budget": thinking_budget}
     if system_prompt:
-        try:
-            setattr(cfg, "system_instruction", system_prompt)
-        except Exception:
-            pass
+        # si tu versión soporta system_instruction, lo usa; si no, haremos prepend
+        cfg["system_instruction"] = system_prompt
     return cfg
 
 
-def _prepend_system_prompt(contents: list[Content], system_prompt: str | None) -> list[Content]:
-    if not system_prompt:
-        return contents
-    head = Content(role="user", parts=[Part.from_text(f"[SYSTEM]\n{system_prompt}")])
-    return [head] + contents
+def _prepend_system_if_needed(contents: list[dict], cfg: dict, system_prompt: str | None) -> list[dict]:
+    has_sys = cfg.get("system_instruction")
+    if system_prompt and not has_sys:
+        head = {"role": "user", "parts": [{"text": system_prompt}]}
+        return [head] + contents
+    return contents
 
 
 def _chat_with_role_id(body: ChatRequest, role_id: str) -> ChatResponse:
@@ -32,15 +27,22 @@ def _chat_with_role_id(body: ChatRequest, role_id: str) -> ChatResponse:
     system_prompt = role.get("system_prompt") if role else None
 
     client = get_gemini_client()
-    contents = [Content(role=m.role, parts=[Part.from_text(m.content)]) for m in body.messages]
+
+    # ✅ Usa diccionarios: cada mensaje -> {"role": ..., "parts": [{"text": "..."}]}
+    contents = [
+        {"role": m.role, "parts": [{"text": m.content}]}
+        for m in body.messages
+    ]
+
     cfg = _build_config(body.temperature, body.thinking_budget, system_prompt)
+    contents = _prepend_system_if_needed(contents, cfg, system_prompt)
 
-    # Fallback si no hay system_instruction:
-    if system_prompt and not getattr(cfg, "system_instruction", None):
-        contents = _prepend_system_prompt(contents, system_prompt)
-
-    resp = client.models.generate_content(model=body.model, contents=contents, config=cfg)
-    return ChatResponse(text=resp.text or "")
+    resp = client.models.generate_content(
+        model=body.model,
+        contents=contents,
+        config=cfg,
+    )
+    return ChatResponse(text=(getattr(resp, "text", "") or ""))
 
 
 def chat_psychology(body: ChatRequest) -> ChatResponse:
