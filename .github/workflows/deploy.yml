@@ -13,7 +13,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -58,8 +58,6 @@ jobs:
 
       - name: Deploy on server
         uses: appleboy/ssh-action@v1.0.3
-        env:
-          APP_DIR: /opt/tomboy-api/Backent_Tomboy  # ← CAMBIO AQUÍ
         with:
           host: ${{ env.SSH_HOST_NORM }}
           username: ${{ env.SSH_USER_NORM }}
@@ -68,26 +66,58 @@ jobs:
           script: |
             set -e
             REL=/tmp/release.tgz
-            APP_DIR=/opt/tomboy-api/Backent_Tomboy  # ← CAMBIO AQUÍ
+            APP_DIR=/opt/tomboy-api/Backent_Tomboy
 
             sudo install -d -o www-data -g www-data "$APP_DIR"
+            
+            # Extraer a directorio temporal primero
+            TMP_DIR=$(mktemp -d)
+            sudo tar --no-same-owner -xzf "$REL" -C "$TMP_DIR"
+            
+            # Limpiar destino (excepto .venv y .env)
             sudo find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name '.venv' ! -name '.env' -exec rm -rf {} +
-
-            sudo tar --no-same-owner -xzf "$REL" -C "$APP_DIR"
+            
+            # Mover archivos nuevos
+            sudo cp -r "$TMP_DIR"/* "$APP_DIR"/
+            sudo rm -rf "$TMP_DIR"
             sudo chown -R www-data:www-data "$APP_DIR"
+            
+            # Asegurar permisos del .env
+            if [ -f "$APP_DIR/.env" ]; then
+              sudo chown www-data:www-data "$APP_DIR/.env"
+              sudo chmod 600 "$APP_DIR/.env"
+            fi
 
+            # Crear venv si no existe
             if [ ! -d "$APP_DIR/.venv" ]; then
               sudo -u www-data python3 -m venv "$APP_DIR/.venv"
             fi
-            sudo -u www-data bash -lc "
-              . $APP_DIR/.venv/bin/activate &&
-              python -m pip install -U pip wheel setuptools &&
-              [ -f $APP_DIR/requirements.txt ] && pip install -r $APP_DIR/requirements.txt || true &&
-              python -m pip install 'uvicorn[standard]' fastapi
+            
+            # Instalar dependencias
+            sudo -u www-data bash -c "
+              cd $APP_DIR &&
+              .venv/bin/pip install -q -r requirements.txt
             "
 
+            # Reiniciar servicio
             sudo systemctl restart tomboy-api
-            sudo systemctl is-active tomboy-api
+            
+            # Esperar a que arranque
+            for i in {1..30}; do
+              if sudo systemctl is-active tomboy-api >/dev/null 2>&1; then
+                if curl -fsS http://127.0.0.1:8100/docs >/dev/null 2>&1; then
+                  echo "API corriendo correctamente"
+                  exit 0
+                fi
+              fi
+              echo "Esperando a que arranque... ($i/30)"
+              sleep 2
+            done
+
+            echo "La app NO arrancó a tiempo" >&2
+            sudo systemctl status tomboy-api --no-pager -l || true
+            sudo journalctl -u tomboy-api -n 50 --no-pager || true
+            exit 1
 
       - name: Smoke test
         run: curl -fsS https://api.breathandbravery.com/docs >/dev/null
