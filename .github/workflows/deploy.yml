@@ -1,0 +1,60 @@
+name: Deploy API
+
+on:
+  push:
+    branches: [ main ]      # despliegue contínuo a main
+  workflow_dispatch:         # botón "Run workflow" manual
+
+concurrency:
+  group: prod-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build package
+        run: tar -czf release.tgz --exclude='.git' --exclude='.github' .
+
+      - name: Upload to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          port: ${{ secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_KEY }}
+          source: "release.tgz"
+          target: "/tmp"
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          APP_DIR: /opt/tomboy-api
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          port: ${{ secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            REL=/tmp/release.tgz
+            APP_DIR=${APP_DIR:-/opt/tomboy-api}
+
+            # Desempaquetar código
+            sudo mkdir -p "$APP_DIR"
+            sudo tar -xzf "$REL" -C "$APP_DIR"
+
+            # Virtualenv determinístico (como www-data)
+            if [ ! -d "$APP_DIR/.venv" ]; then
+              sudo -u www-data python3 -m venv "$APP_DIR/.venv"
+            fi
+            sudo -u www-data bash -lc ". $APP_DIR/.venv/bin/activate && pip install -U pip && if [ -f $APP_DIR/requirements.txt ]; then pip install -r $APP_DIR/requirements.txt; fi"
+
+            # Reiniciar servicio systemd
+            sudo systemctl restart tomboy-api
+
+      - name: Smoke test
+        run: curl -fsS https://api.breathandbravery.com/docs >/dev/null
