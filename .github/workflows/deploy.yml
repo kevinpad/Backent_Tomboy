@@ -51,7 +51,7 @@ jobs:
           host: ${{ env.SSH_HOST_NORM }}
           username: ${{ env.SSH_USER_NORM }}
           port: ${{ env.SSH_PORT_NORM }}
-          key: ${{ env.SSH_KEY_DECODED }}    # ← Cambiado: usar 'key' con el contenido
+          key: ${{ env.SSH_KEY_DECODED }}
           source: "release.tgz"
           target: "/tmp"
           debug: true
@@ -59,16 +59,16 @@ jobs:
       - name: Deploy on server
         uses: appleboy/ssh-action@v1.0.3
         env:
-          APP_DIR: /opt/tomboy-api
+          APP_DIR: /opt/tomboy-api/Backent_Tomboy  # ← CAMBIO AQUÍ
         with:
           host: ${{ env.SSH_HOST_NORM }}
           username: ${{ env.SSH_USER_NORM }}
           port: ${{ env.SSH_PORT_NORM }}
-          key: ${{ env.SSH_KEY_DECODED }}    # ← Cambiado: usar 'key' con el contenido
+          key: ${{ env.SSH_KEY_DECODED }}
           script: |
             set -e
             REL=/tmp/release.tgz
-            APP_DIR=${APP_DIR:-/opt/tomboy-api}
+            APP_DIR=/opt/tomboy-api/Backent_Tomboy  # ← CAMBIO AQUÍ
 
             sudo install -d -o www-data -g www-data "$APP_DIR"
             sudo find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name '.venv' ! -name '.env' -exec rm -rf {} +
