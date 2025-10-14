@@ -22,25 +22,18 @@ jobs:
       - name: Build package
         run: git archive --format=tar.gz -o release.tgz HEAD
 
-      # Decodifica la privada (Base64) y la guarda en el WORKSPACE (montado en los containers)
-      - name: Write SSH key to file (base64 → workspace)
+      # Decodifica la clave SSH y la guarda como variable de entorno
+      - name: Decode SSH key
         shell: bash
         env:
           SSH_KEY_B64: ${{ secrets.SSH_KEY_B64 }}
         run: |
           set -e
-          umask 077
-          mkdir -p "$GITHUB_WORKSPACE/.ssh"
-          echo "$SSH_KEY_B64" | base64 -d > "$GITHUB_WORKSPACE/.ssh/id_ed25519_actions"
-          chmod 600 "$GITHUB_WORKSPACE/.ssh/id_ed25519_actions"
-          # exportamos la ruta para usarla en todos los pasos
-          echo "KEY_PATH=$GITHUB_WORKSPACE/.ssh/id_ed25519_actions" >> "$GITHUB_ENV"
-          # sanity checks
-          ls -l "$GITHUB_WORKSPACE/.ssh/id_ed25519_actions"
-          head -c 14 "$GITHUB_WORKSPACE/.ssh/id_ed25519_actions" | hexdump -C
-
-      - name: Show private key fingerprint (debug)
-        run: ssh-keygen -lf "$KEY_PATH"
+          # Decodificamos y guardamos como variable de entorno
+          SSH_KEY_DECODED=$(echo "$SSH_KEY_B64" | base64 -d)
+          echo "SSH_KEY_DECODED<<EOF" >> $GITHUB_ENV
+          echo "$SSH_KEY_DECODED" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
 
       - name: Normalize host/user/port (trim)
         shell: bash
@@ -52,23 +45,13 @@ jobs:
           echo "SSH_USER_NORM=$U" >> "$GITHUB_ENV"
           echo "SSH_PORT_NORM=$P" >> "$GITHUB_ENV"
 
-      - name: SSH ping (-vvv)
-        run: |
-          ssh -vvv \
-            -i "$KEY_PATH" \
-            -p "$SSH_PORT_NORM" \
-            -o StrictHostKeyChecking=no \
-            -o IdentitiesOnly=yes \
-            "$SSH_USER_NORM@$SSH_HOST_NORM" \
-            'echo "SSH OK on $(hostname)"'
-
       - name: Upload to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ env.SSH_HOST_NORM }}
           username: ${{ env.SSH_USER_NORM }}
           port: ${{ env.SSH_PORT_NORM }}
-          key_path: ${{ env.KEY_PATH }}     # ← ahora dentro del workspace
+          key: ${{ env.SSH_KEY_DECODED }}    # ← Cambiado: usar 'key' con el contenido
           source: "release.tgz"
           target: "/tmp"
           debug: true
@@ -81,7 +64,7 @@ jobs:
           host: ${{ env.SSH_HOST_NORM }}
           username: ${{ env.SSH_USER_NORM }}
           port: ${{ env.SSH_PORT_NORM }}
-          key_path: ${{ env.KEY_PATH }}     # ← igual aquí
+          key: ${{ env.SSH_KEY_DECODED }}    # ← Cambiado: usar 'key' con el contenido
           script: |
             set -e
             REL=/tmp/release.tgz
