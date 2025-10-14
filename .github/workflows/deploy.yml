@@ -22,57 +22,66 @@ jobs:
       - name: Build package
         run: git archive --format=tar.gz -o release.tgz HEAD
 
-      # Escribe la clave privada desde el Secret (Base64 → archivo)
-      - name: Write SSH key to file (base64 decode)
+      # Decodifica la privada (Base64) y la guarda en el WORKSPACE (montado en los containers)
+      - name: Write SSH key to file (base64 → workspace)
         shell: bash
         env:
           SSH_KEY_B64: ${{ secrets.SSH_KEY_B64 }}
         run: |
+          set -e
           umask 077
-          # decodifica a archivo
-          echo "$SSH_KEY_B64" | base64 -d > "$RUNNER_TEMP/ssh_key"
-          chmod 600 "$RUNNER_TEMP/ssh_key"
+          mkdir -p "$GITHUB_WORKSPACE/.ssh"
+          echo "$SSH_KEY_B64" | base64 -d > "$GITHUB_WORKSPACE/.ssh/id_ed25519_actions"
+          chmod 600 "$GITHUB_WORKSPACE/.ssh/id_ed25519_actions"
+          # exportamos la ruta para usarla en todos los pasos
+          echo "KEY_PATH=$GITHUB_WORKSPACE/.ssh/id_ed25519_actions" >> "$GITHUB_ENV"
           # sanity checks
-          ls -l "$RUNNER_TEMP/ssh_key"
-          head -c 14 "$RUNNER_TEMP/ssh_key" | hexdump -C
+          ls -l "$GITHUB_WORKSPACE/.ssh/id_ed25519_actions"
+          head -c 14 "$GITHUB_WORKSPACE/.ssh/id_ed25519_actions" | hexdump -C
 
-      # Verifica que la llave es válida (si falla, el secreto está mal)
       - name: Show private key fingerprint (debug)
-        run: ssh-keygen -lf "$RUNNER_TEMP/ssh_key"
+        run: ssh-keygen -lf "$KEY_PATH"
 
-      # Prueba de conexión SSH
+      - name: Normalize host/user/port (trim)
+        shell: bash
+        run: |
+          H="$(printf '%s' "${{ secrets.SSH_HOST }}" | tr -d '\r\n\t ' )"
+          U="$(printf '%s' "${{ secrets.SSH_USER }}" | tr -d '\r\n\t ' )"
+          P="$(printf '%s' "${{ secrets.SSH_PORT }}" | tr -d '\r\n\t ' )"
+          echo "SSH_HOST_NORM=$H" >> "$GITHUB_ENV"
+          echo "SSH_USER_NORM=$U" >> "$GITHUB_ENV"
+          echo "SSH_PORT_NORM=$P" >> "$GITHUB_ENV"
+
       - name: SSH ping (-vvv)
         run: |
           ssh -vvv \
-            -i "$RUNNER_TEMP/ssh_key" \
-            -p "${{ secrets.SSH_PORT }}" \
+            -i "$KEY_PATH" \
+            -p "$SSH_PORT_NORM" \
             -o StrictHostKeyChecking=no \
             -o IdentitiesOnly=yes \
-            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            "$SSH_USER_NORM@$SSH_HOST_NORM" \
             'echo "SSH OK on $(hostname)"'
 
-      # Sube el paquete al servidor
       - name: Upload to server
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          port: ${{ secrets.SSH_PORT }}
-          key_path: ${{ runner.temp }}/ssh_key
+          host: ${{ env.SSH_HOST_NORM }}
+          username: ${{ env.SSH_USER_NORM }}
+          port: ${{ env.SSH_PORT_NORM }}
+          key_path: ${{ env.KEY_PATH }}     # ← ahora dentro del workspace
           source: "release.tgz"
           target: "/tmp"
           debug: true
 
-      # Despliegue remoto
       - name: Deploy on server
         uses: appleboy/ssh-action@v1.0.3
         env:
           APP_DIR: /opt/tomboy-api
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          port: ${{ secrets.SSH_PORT }}
-          key_path: ${{ runner.temp }}/ssh_key
+          host: ${{ env.SSH_HOST_NORM }}
+          username: ${{ env.SSH_USER_NORM }}
+          port: ${{ env.SSH_PORT_NORM }}
+          key_path: ${{ env.KEY_PATH }}     # ← igual aquí
           script: |
             set -e
             REL=/tmp/release.tgz
