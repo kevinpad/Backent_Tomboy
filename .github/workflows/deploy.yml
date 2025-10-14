@@ -2,8 +2,8 @@ name: Deploy API
 
 on:
   push:
-    branches: [ main ]      # despliegue contínuo a main
-  workflow_dispatch:         # botón "Run workflow" manual
+    branches: [ main ]        # despliegue continuo a main
+  workflow_dispatch:           # botón "Run workflow" manual
 
 concurrency:
   group: prod-deploy
@@ -12,20 +12,23 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      # Empaqueta exactamente lo que está en HEAD (respeta .gitattributes export-ignore)
       - name: Build package
         run: git archive --format=tar.gz -o release.tgz HEAD
 
       - name: Upload to server
         uses: appleboy/scp-action@v0.1.7
-        with: 
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          port: ${{ secrets.SSH_PORT }}
-          key: ${{ secrets.SSH_KEY }}
+        with:
+          host: ${{ secrets.SSH_HOST }}      # 167.172.198.16
+          username: ${{ secrets.SSH_USER }}  # sergio (o deploy)
+          port: ${{ secrets.SSH_PORT }}      # 22
+          key: ${{ secrets.SSH_KEY }}        # privada id_ed25519_actions
           source: "release.tgz"
           target: "/tmp"
 
@@ -43,18 +46,35 @@ jobs:
             REL=/tmp/release.tgz
             APP_DIR=${APP_DIR:-/opt/tomboy-api}
 
-            # Desempaquetar código
-            sudo mkdir -p "$APP_DIR"
-            sudo tar -xzf "$REL" -C "$APP_DIR"
+            # Prepara carpeta y limpia (conserva .venv y .env)
+            sudo install -d -o www-data -g www-data "$APP_DIR"
+            sudo find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name '.venv' ! -name '.env' -exec rm -rf {} +
 
-            # Virtualenv determinístico (como www-data)
+            # Extrae sin heredar propietarios del runner
+            sudo tar --no-same-owner -xzf "$REL" -C "$APP_DIR"
+
+            # Virtualenv determinístico como www-data
             if [ ! -d "$APP_DIR/.venv" ]; then
               sudo -u www-data python3 -m venv "$APP_DIR/.venv"
             fi
-            sudo -u www-data bash -lc ". $APP_DIR/.venv/bin/activate && pip install -U pip && if [ -f $APP_DIR/requirements.txt ]; then pip install -r $APP_DIR/requirements.txt; fi"
 
-            # Reiniciar servicio systemd
+            # Instala pip + wheel + setuptools y requirements (si existe)
+            sudo -u www-data bash -lc "
+              . $APP_DIR/.venv/bin/activate &&
+              python -m pip install -U pip wheel setuptools &&
+              [ -f $APP_DIR/requirements.txt ] && pip install -r $APP_DIR/requirements.txt || true
+            "
+
+            # Asegura uvicorn/fastapi por si no están en requirements.txt
+            sudo -u www-data bash -lc "
+              . $APP_DIR/.venv/bin/activate &&
+              python -m pip install 'uvicorn[standard]' fastapi
+            "
+
+            # Reinicia servicio
             sudo systemctl restart tomboy-api
+            sudo systemctl is-active tomboy-api
 
+      # Cambia a /health si tienes endpoint de salud
       - name: Smoke test
         run: curl -fsS https://api.breathandbravery.com/docs >/dev/null
