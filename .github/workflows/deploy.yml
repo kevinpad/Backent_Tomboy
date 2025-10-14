@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 name: Deploy API
 
 on:
@@ -21,22 +22,25 @@ jobs:
       - name: Build package
         run: git archive --format=tar.gz -o release.tgz HEAD
 
-      # Escribe la clave privada desde el Secret sin romper saltos de línea
-      - name: Write SSH key to file
+      # Escribe la clave privada desde el Secret (Base64 → archivo)
+      - name: Write SSH key to file (base64 decode)
         shell: bash
         env:
-          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KEY_B64: ${{ secrets.SSH_KEY_B64 }}
         run: |
           umask 077
-          printf "%s" "$SSH_KEY" > "$RUNNER_TEMP/ssh_key"
-          sed -i 's/\r$//' "$RUNNER_TEMP/ssh_key"
+          # decodifica a archivo
+          echo "$SSH_KEY_B64" | base64 -d > "$RUNNER_TEMP/ssh_key"
           chmod 600 "$RUNNER_TEMP/ssh_key"
+          # sanity checks
+          ls -l "$RUNNER_TEMP/ssh_key"
+          head -c 14 "$RUNNER_TEMP/ssh_key" | hexdump -C
 
-      # Verifica que la llave es válida (muestra huella)
+      # Verifica que la llave es válida (si falla, el secreto está mal)
       - name: Show private key fingerprint (debug)
         run: ssh-keygen -lf "$RUNNER_TEMP/ssh_key"
 
-      # Prueba de conexión SSH (si falla, aquí veremos el motivo)
+      # Prueba de conexión SSH
       - name: SSH ping (-vvv)
         run: |
           ssh -vvv \
@@ -74,15 +78,12 @@ jobs:
             REL=/tmp/release.tgz
             APP_DIR=${APP_DIR:-/opt/tomboy-api}
 
-            # Crear carpeta y limpiar (manteniendo .venv y .env si existen)
             sudo install -d -o www-data -g www-data "$APP_DIR"
             sudo find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name '.venv' ! -name '.env' -exec rm -rf {} +
 
-            # Desempaquetar
             sudo tar --no-same-owner -xzf "$REL" -C "$APP_DIR"
             sudo chown -R www-data:www-data "$APP_DIR"
 
-            # Virtualenv y dependencias
             if [ ! -d "$APP_DIR/.venv" ]; then
               sudo -u www-data python3 -m venv "$APP_DIR/.venv"
             fi
@@ -93,10 +94,8 @@ jobs:
               python -m pip install 'uvicorn[standard]' fastapi
             "
 
-            # Reinicio del servicio
             sudo systemctl restart tomboy-api
             sudo systemctl is-active tomboy-api
 
-      # Prueba rápida del endpoint público
       - name: Smoke test
         run: curl -fsS https://api.breathandbravery.com/docs >/dev/null
